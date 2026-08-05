@@ -1,0 +1,188 @@
+name: Build OrangeFox 14.1 vendor_boot
+
+# 完整构建管线：官方 OrangeFox 14.1 sync -> 设备树 -> vendorbootimage
+# -> package-vendor-boot.sh（全量校验 + AVB footer）。
+#
+# Runner 要求：fox_14.1 树约需 85GB 磁盘 + 16GB+ 内存。
+# 标准 GitHub runner（14GB 磁盘）不够 —— 用 larger runner
+# （如 ubuntu-22.04-16core，200GB）或 self-hosted runner，
+# 通过 workflow_dispatch 的 runner 输入选择。
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: >-
+          Runner label (larger runner 如 ubuntu-22.04-16core，或 self-hosted 标签)
+        required: true
+        default: ubuntu-22.04-16core
+      upload_release:
+        description: 上传镜像到 GitHub Release（draft）
+        type: boolean
+        default: false
+      release_tag:
+        description: Release tag（upload_release=true 时使用；留空则用 run id）
+        required: false
+        default: ''
+  push:
+    branches: [main]
+
+env:
+  ALLOW_MISSING_DEPENDENCIES: "true"
+  LC_ALL: "C"
+  FOX_BUILD_DEVICE: dash
+  USE_CCACHE: "1"
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  FOX_TREE: ${{ github.workspace }}/fox_14.1
+  DEVICE_TREE: ${{ github.workspace }}/device-tree
+
+jobs:
+  build:
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04-16core' }}
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout device tree
+        uses: actions/checkout@v4
+        with:
+          path: device-tree
+
+      - name: Disk check
+        run: df -h /
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/hostedtoolcache 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive sudo apt-get update -yq
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -yq \
+            git-core gnupg flex bison gperf build-essential zip curl \
+            zlib1g-dev libc6-dev-i386 libncurses-dev libssl-dev x11proto-core-dev \
+            libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc unzip \
+            fontconfig python3 bc cpio ccache lz4
+          if ! command -v repo >/dev/null 2>&1; then
+            sudo curl -sS https://storage.googleapis.com/git-repo-downloads/repo \
+              -o /usr/local/bin/repo
+            sudo chmod +x /usr/local/bin/repo
+          fi
+          if [ ! -e /usr/bin/python ]; then
+            sudo ln -s /usr/bin/python3 /usr/bin/python
+          fi
+          python3 --version
+          repo --version || true
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up swap space
+        run: |
+          if ! swapon --show | grep -q swapfile; then
+            sudo fallocate -l 16G /swapfile
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile
+            sudo swapon /swapfile
+          fi
+          free -h
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ofox-ccache-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ofox-ccache-${{ github.ref_name }}-
+            ofox-ccache-
+
+      - name: Sync OrangeFox 14.1 sources (official sync script)
+        run: |
+          git clone --depth=1 https://gitlab.com/OrangeFox/sync.git /tmp/ofox-sync
+          cd /tmp/ofox-sync
+          ./orangefox_sync.sh --branch 14.1 --path "$FOX_TREE"
+        timeout-minutes: 180
+
+      - name: Install device tree
+        run: |
+          mkdir -p "$FOX_TREE/device/xiaomi/dash"
+          cp -a "$DEVICE_TREE/." "$FOX_TREE/device/xiaomi/dash/"
+          rm -rf "$FOX_TREE/device/xiaomi/dash/.git"
+          ls -la "$FOX_TREE/device/xiaomi/dash/" | head -30
+
+      - name: Apply recovery source patches (optional)
+        run: |
+          set -e
+          if ls "$DEVICE_TREE"/patches/*.patch >/dev/null 2>&1; then
+            for p in "$DEVICE_TREE"/patches/*.patch; do
+              echo "Applying $p"
+              git -C "$FOX_TREE" apply --check "$p"
+              git -C "$FOX_TREE" apply "$p"
+            done
+          else
+            echo "patches/ 不存在 —— 构建未打补丁的 OrangeFox 源码（无 EV_FF 触觉补丁）"
+          fi
+
+      - name: Build vendor_boot
+        run: |
+          ccache -M 8G || true
+          ccache -z || true
+          cd "$FOX_TREE"
+          source build/envsetup.sh
+          lunch twrp_dash-ap2a-eng
+          m installclean
+          m -j$(nproc --all) vendorbootimage
+        timeout-minutes: 300
+
+      - name: Package release image
+        run: |
+          SHORT_SHA=$(git -C "$DEVICE_TREE" rev-parse --short HEAD)
+          DATE=$(date +%Y%m%d)
+          IMG="vendor_boot-dash-${DATE}-${SHORT_SHA}.img"
+          echo "OUTPUT_IMAGE=$FOX_TREE/$IMG" >> "$GITHUB_ENV"
+          bash "$FOX_TREE/device/xiaomi/dash/package-vendor-boot.sh" \
+            "$FOX_TREE" "$FOX_TREE/$IMG"
+          ccache -s || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vendor_boot-dash
+          path: |
+            ${{ env.OUTPUT_IMAGE }}
+            ${{ env.OUTPUT_IMAGE }}.sha256
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish GitHub Release (draft)
+        if: ${{ github.event.inputs.upload_release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.OUTPUT_IMAGE }}
+            ${{ env.OUTPUT_IMAGE }}.sha256
+          tag_name: ${{ github.event.inputs.release_tag != '' && github.event.inputs.release_tag || format('vendor_boot-{0}', github.run_id) }}
+          name: dash OrangeFox 14.1 ${{ github.event.inputs.release_tag }}
+          draft: true
+          body: |
+            Device: dash (Redmi Turbo 5 Max, MT6991Z)
+            Tree: lakitu12/dash-OrangeFox14 @ ${{ github.sha }}
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Job summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "## 构建结果"
+            echo "- Image: \`${{ env.OUTPUT_IMAGE }}\`"
+            ls -la "${{ env.OUTPUT_IMAGE }}" "${{ env.OUTPUT_IMAGE }}.sha256" 2>/dev/null || true
+            echo "- 磁盘:"
+            df -h /
+          } >> "$GITHUB_STEP_SUMMARY"

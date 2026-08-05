@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""dash-OrangeFox14 tree sanity checks (CI + local).
+
+Cross-checks every fixed SHA-256 constant inside the tree's scripts against
+the committed prebuilt files, and verifies internal consistency of
+package-vendor-boot.sh (mkbootimg cmdline vs final awk contract).
+
+Usage: python3 verify_tree.py <repo-root>
+"""
+
+import gzip
+import hashlib
+import io
+import re
+import sys
+from pathlib import Path
+
+
+def die(msg: str) -> None:
+    print(f"FAIL: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load_constants(script: Path, names: tuple[str, ...]) -> dict[str, str]:
+    """Parse `NAME=64hex` assignments from a shell script."""
+    out: dict[str, str] = {}
+    text = script.read_text(encoding="utf-8", errors="replace")
+    for name in names:
+        m = re.search(rf"^{name}=([0-9a-f]{{64}})", text, re.M)
+        if not m:
+            die(f"{script.name}: missing constant {name}")
+        out[name] = m.group(1)
+    return out
+
+
+def main() -> None:
+    root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
+    pkg = root / "package-vendor-boot.sh"
+    extract = root / "extract-official-prebuilts.sh"
+    prepare = root / "recovery/prepare-ramdisk.sh"
+
+    # ------------------------------------------------------------------ #
+    # 1. Required files
+    # ------------------------------------------------------------------ #
+    required = [
+        "package-vendor-boot.sh",
+        "extract-official-prebuilts.sh",
+        "build.sh",
+        "recovery/prepare-ramdisk.sh",
+        "recovery/root/init.recovery.mt6991.rc",
+        "recovery/root/init.recovery.project.rc",
+        "prebuilt/kernel",
+        "prebuilt/dtb/dash.dtb",
+        "prebuilt/vendor_ramdisk/platform.cpio.gz",
+        "prebuilt/recovery_modules/scp.ko",
+        "prebuilt/recovery_modules/nt38771_touch_dash.ko",
+        "prebuilt/recovery_modules/xiaomi_touch_dash.ko",
+        "prebuilt/recovery_modules/modules.dep",
+        "prebuilt/recovery_properties/system.build.prop",
+        "prebuilt/recovery_properties/vendor.build.prop",
+        "recovery.fstab",
+        "recovery/root/first_stage_ramdisk/fstab.emmc",
+        "recovery/root/system/etc/ueventd.rc",
+    ]
+    for rel in required:
+        if not (root / rel).is_file():
+            die(f"missing required file: {rel}")
+
+    # ------------------------------------------------------------------ #
+    # 2. Dead-code / hardcoded-path residues
+    # ------------------------------------------------------------------ #
+    for rel in ("build-variant.sh", "recovery/patch-ap-touch-modules.py"):
+        if (root / rel).exists():
+            die(f"stale file should have been removed: {rel}")
+    for script in (pkg, extract, prepare, root / "build.sh"):
+        text = script.read_text(encoding="utf-8", errors="replace")
+        if "/home/twrp" in text:
+            die(f"{script.name}: hardcoded /home/twrp path")
+    for script in (root / "Android.mk", prepare):
+        text = script.read_text(encoding="utf-8", errors="replace")
+        if "patch-ap-touch-modules" in text:
+            die(f"{script.name}: still references deleted patch-ap-touch-modules.py")
+
+    wrapper = (root / "scripts/mkbootimg-wrapper.sh").read_text(encoding="utf-8")
+    if "../../../.." not in wrapper:
+        die("scripts/mkbootimg-wrapper.sh: missing relative TOP resolution")
+    if "/home/twrp" in wrapper:
+        die("scripts/mkbootimg-wrapper.sh: hardcoded path")
+
+    # ------------------------------------------------------------------ #
+    # 3. package-vendor-boot.sh constants vs shipped prebuilts
+    # ------------------------------------------------------------------ #
+    pkg_const = load_constants(
+        pkg,
+        (
+            "PLATFORM_CPIO_SHA256",
+            "PLATFORM_GZIP_SHA256",
+            "DTB_SHA256",
+            "SCP_OUTPUT_SHA256",
+            "NT38771_OUTPUT_SHA256",
+            "XIAOMI_TOUCH_SHA256",
+            "MERGED_MODULES_DEP_SHA256",
+        ),
+    )
+    gzip_bytes = (root / "prebuilt/vendor_ramdisk/platform.cpio.gz").read_bytes()
+    if hashlib.sha256(gzip_bytes).hexdigest() != pkg_const["PLATFORM_GZIP_SHA256"]:
+        die("platform.cpio.gz != PLATFORM_GZIP_SHA256")
+    cpio_hash = hashlib.sha256(gzip.decompress(gzip_bytes)).hexdigest()
+    if cpio_hash != pkg_const["PLATFORM_CPIO_SHA256"]:
+        die("platform.cpio.gz(decompressed) != PLATFORM_CPIO_SHA256")
+
+    pkg_map = {
+        "DTB_SHA256": "prebuilt/dtb/dash.dtb",
+        "SCP_OUTPUT_SHA256": "prebuilt/recovery_modules/scp.ko",
+        "NT38771_OUTPUT_SHA256": "prebuilt/recovery_modules/nt38771_touch_dash.ko",
+        "XIAOMI_TOUCH_SHA256": "prebuilt/recovery_modules/xiaomi_touch_dash.ko",
+        "MERGED_MODULES_DEP_SHA256": "prebuilt/recovery_modules/modules.dep",
+    }
+    for const, rel in pkg_map.items():
+        if sha256_file(root / rel) != pkg_const[const]:
+            die(f"{rel} != {const}")
+
+    # ------------------------------------------------------------------ #
+    # 4. prepare-ramdisk.sh prop hashes vs shipped
+    # ------------------------------------------------------------------ #
+    prepare_text = prepare.read_text(encoding="utf-8")
+    for prop in ("system.build.prop", "vendor.build.prop"):
+        m = re.search(
+            rf"verify_sha256 ([0-9a-f]{{64}})\s*\\?\s*\"\$property_dir/{prop}\"",
+            prepare_text,
+        )
+        if not m:
+            die(f"prepare-ramdisk.sh: missing hash for {prop}")
+        if sha256_file(root / f"prebuilt/recovery_properties/{prop}") != m.group(1):
+            die(f"prebuilt/recovery_properties/{prop} mismatch in prepare-ramdisk.sh")
+
+    # ------------------------------------------------------------------ #
+    # 5. extract-official-prebuilts.sh: OTA-expected hashes vs shipped
+    #    (files the script re-installs must match; the SKIP'd locally-modified
+    #    files are only baseline-verified and are excluded here)
+    # ------------------------------------------------------------------ #
+    extract_text = extract.read_text(encoding="utf-8")
+    extract_map = {
+        r'"\$source_root/boot/kernel"': "prebuilt/kernel",
+        r'"\$source_root/vendor_boot/dtb"': "prebuilt/dtb/dash.dtb",
+        r'"\$source_root/recovery_ramdisk/root/first_stage_ramdisk/fstab.emmc"':
+            "recovery/root/first_stage_ramdisk/fstab.emmc",
+        r'"\$source_root/recovery_ramdisk/root/init.recovery.mt6991.rc"':
+            "recovery/root/init.recovery.mt6991.rc",
+        r'"\$vendor_dlkm_modules/scp.ko"': "prebuilt/recovery_modules/scp.ko",
+        r'"\$vendor_dlkm_modules/nt38771_touch_dash.ko"':
+            "prebuilt/recovery_modules/nt38771_touch_dash.ko",
+        r'"\$vendor_dlkm_modules/xiaomi_touch_dash.ko"':
+            "prebuilt/recovery_modules/xiaomi_touch_dash.ko",
+        r'"\$platform_modules/modules.dep"': "prebuilt/recovery_modules/modules.dep",
+        r'"\$system_build_props"': "prebuilt/recovery_properties/system.build.prop",
+        r'"\$vendor_build_props"': "prebuilt/recovery_properties/vendor.build.prop",
+    }
+    for quoted_path, rel in extract_map.items():
+        m = re.search(rf"verify_sha256 ([0-9a-f]{{64}}) {quoted_path}", extract_text)
+        if not m:
+            die(f"extract script: missing verify for {rel}")
+        if sha256_file(root / rel) != m.group(1):
+            die(f"{rel} != extract script expected hash")
+
+    # platform ramdisk conversion targets
+    for const, rel, note in (
+        ("9ece806a35c1f75a72aa87a2b2d9bdec480805672610c8732f7bdb6646072e03",
+         "prebuilt/vendor_ramdisk/platform.cpio.gz", "cpio"),
+        ("ef0aee35573a8b94e4fc08c34343f23bb09d3ac1a7637fcf422f6fb1e529af44",
+         "prebuilt/vendor_ramdisk/platform.cpio.gz", "gzip"),
+    ):
+        actual = (cpio_hash if note == "cpio"
+                  else hashlib.sha256(gzip_bytes).hexdigest())
+        if actual != const:
+            die(f"extract script {note} target hash drift for platform ramdisk")
+
+    # the locally-modified files must NOT be re-installed by the script
+    for rel in ("recovery.fstab", "recovery/root/system/etc/ueventd.rc"):
+        if re.search(rf"install.*{re.escape(rel)}", extract_text):
+            die(f"extract script must not overwrite locally-modified {rel}")
+
+    # ------------------------------------------------------------------ #
+    # 6. package-vendor-boot.sh internal consistency (mkbootimg <-> awk)
+    # ------------------------------------------------------------------ #
+    pkg_text = pkg.read_text(encoding="utf-8")
+    m = re.search(r'--vendor_cmdline "([^"]+)"', pkg_text)
+    if not m:
+        die("package script: missing --vendor_cmdline")
+    cmdline = m.group(1)
+    m = re.search(r"vendor command line args: ([^$]+)\$", pkg_text)
+    if not m:
+        die("package script: missing final awk cmdline contract")
+    awk_cmdline = m.group(1).strip()
+    if cmdline != awk_cmdline:
+        die(f"cmdline drift: mkbootimg '{cmdline}' vs awk contract '{awk_cmdline}'")
+    if cmdline != "bootopt=64S3,32N2,64N2":
+        die(f"unexpected dash stock cmdline: {cmdline}")
+    if "erofs" in cmdline or "erofs" in awk_cmdline:
+        die("cmdline must not contain erofs (dash stock has none)")
+
+    print("All tree consistency checks passed.")
+    print(f"  platform.cpio.gz: {cpio_hash[:16]}... ({len(gzip_bytes)} B)")
+    print(f"  cmdline: {cmdline}")
+
+
+if __name__ == "__main__":
+    main()

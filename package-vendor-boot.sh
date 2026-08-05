@@ -213,7 +213,7 @@ awk '
     /^page size: 0x00001000$/ { page_size = 1 }
     /^kernel load address: 0x80000000$/ { kernel_address = 1 }
     /^ramdisk load address: 0xa6f00000$/ { ramdisk_address = 1 }
-    /^vendor command line args: bootopt=64S3,32N2,64N2 erofs.reserved_pages=64$/ { cmdline = 1 }
+    /^vendor command line args: bootopt=64S3,32N2,64N2$/ { cmdline = 1 }
     /^kernel tags load address: 0x87c80000$/ { tags_address = 1 }
     /^dtb address: 0x0000000087c80000$/ { dtb_address = 1 }
     /^vendor bootconfig size: 0$/ { empty_bootconfig = 1 }

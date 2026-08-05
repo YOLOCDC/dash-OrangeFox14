@@ -1,0 +1,29 @@
+name: Tree sanity
+
+# 快速自检（秒级）：shell 语法、prebuilt 哈希与脚本常量交叉校验、
+# package-vendor-boot.sh 的 cmdline 一致性、无硬编码路径残留。
+# 防 P0 类回归（如 mkbootimg 参数与终检 awk 漂移）。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  sanity:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Shell syntax
+        run: |
+          set -e
+          for f in build.sh package-vendor-boot.sh extract-official-prebuilts.sh \
+                   recovery/prepare-ramdisk.sh scripts/mkbootimg-wrapper.sh; do
+            bash -n "$f"
+            echo "OK: $f"
+          done
+
+      - name: Tree consistency checks
+        run: python3 .github/scripts/verify_tree.py .

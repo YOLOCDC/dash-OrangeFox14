@@ -6,7 +6,6 @@ LOCAL_MODULE_TAGS := optional
 LOCAL_MODULE_PATH := $(TARGET_RECOVERY_ROOT_OUT)
 LOCAL_ADDITIONAL_DEPENDENCIES := \
     $(LOCAL_PATH)/recovery/prepare-ramdisk.sh \
-    $(LOCAL_PATH)/recovery/patch-ap-touch-modules.py \
     $(LOCAL_PATH)/prebuilt/recovery_modules/scp.ko \
     $(LOCAL_PATH)/prebuilt/recovery_modules/nt38771_touch_dash.ko \
     $(LOCAL_PATH)/prebuilt/recovery_modules/xiaomi_touch_dash.ko \
