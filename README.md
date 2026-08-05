@@ -137,10 +137,11 @@ source used for a public release must also be published.
    `.sha256`) uploaded as an artifact, optionally published to a GitHub
    Release (draft).
 
-**Runner requirements**: the fox_14.1 tree needs roughly 85 GB of disk and
-16 GB+ RAM. Standard GitHub-hosted runners (14 GB disk) are too small — use a
-GitHub larger runner (`ubuntu-22.04-16core`, 200 GB) or a self-hosted runner,
-selectable via the `runner` workflow input.
+**Runner**: 默认标准 `ubuntu-22.04` runner 即可 —— workflow 内置与
+TWRP-Recovery-Builder-2024 相同的精简方案（`slimhub_actions` 清理 + 24G
+swap）。实际同步规模 ≈674 个项目（`twrp-default.xml` + `remove-minimal.xml`
+裁剪），比 TWRP-A16 的 990 个项目还小。需要更大机器时可在
+`workflow_dispatch` 的 `runner` 输入覆盖（larger runner / self-hosted）。
 
 `.github/workflows/verify.yml` runs cheap tree-sanity checks on every push/PR:
 shell syntax, prebuilt hash cross-checks against all script constants, and

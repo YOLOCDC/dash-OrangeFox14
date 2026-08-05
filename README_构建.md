@@ -53,8 +53,9 @@ bash device/xiaomi/dash/package-vendor-boot.sh ~/fox_14.1 ~/fox_14.1/vendor_boot
 ## CI
 GitHub Actions：
 - `.github/workflows/build.yml` —— 完整构建（workflow_dispatch / push main）。
-  需要大容量 runner（larger runner 如 `ubuntu-22.04-16core` 或 self-hosted，
-  标准 runner 磁盘 14GB 不够）。可选 `patches/*.patch` 复现 EV_FF 触觉补丁。
+  **标准 ubuntu-22.04 runner 即可**（内置 slimhub 清理 + 24G swap，与
+  TWRP-Recovery-Builder-2024 同款方案）。可选 `patches/*.patch` 复现 EV_FF
+  触觉补丁。
 - `.github/workflows/verify.yml` —— 快速自检（push/PR 触发）：shell 语法、
   prebuilt 哈希与脚本常量交叉校验、cmdline 一致性。
 

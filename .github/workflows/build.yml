@@ -3,19 +3,19 @@ name: Build OrangeFox 14.1 vendor_boot
 # 完整构建管线：官方 OrangeFox 14.1 sync -> 设备树 -> vendorbootimage
 # -> package-vendor-boot.sh（全量校验 + AVB footer）。
 #
-# Runner 要求：fox_14.1 树约需 85GB 磁盘 + 16GB+ 内存。
-# 标准 GitHub runner（14GB 磁盘）不够 —— 用 larger runner
-# （如 ubuntu-22.04-16core，200GB）或 self-hosted runner，
-# 通过 workflow_dispatch 的 runner 输入选择。
+# Runner：默认标准 ubuntu-22.04（与 TWRP-Recovery-Builder-2024 同款精简方案：
+# slimhub_actions 清理 + 24G swap）。树规模 ≈674 项目（twrp-default.xml +
+# remove-minimal.xml 裁剪），TWRP-A16 的 990 项目都能跑，本树标准 runner 可行。
+# 如需更大机器可在 workflow_dispatch 的 runner 输入覆盖。
 
 on:
   workflow_dispatch:
     inputs:
       runner:
         description: >-
-          Runner label (larger runner 如 ubuntu-22.04-16core，或 self-hosted 标签)
+          Runner label（默认 ubuntu-22.04；可填 larger runner 或 self-hosted 标签）
         required: true
-        default: ubuntu-22.04-16core
+        default: ubuntu-22.04
       upload_release:
         description: 上传镜像到 GitHub Release（draft）
         type: boolean
@@ -31,75 +31,80 @@ env:
   ALLOW_MISSING_DEPENDENCIES: "true"
   LC_ALL: "C"
   FOX_BUILD_DEVICE: dash
-  USE_CCACHE: "1"
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
   FOX_TREE: ${{ github.workspace }}/fox_14.1
   DEVICE_TREE: ${{ github.workspace }}/device-tree
 
 jobs:
   build:
-    runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04-16core' }}
+    name: Build OrangeFox 14.1 by ${{ github.actor }}
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
+    if: github.event.repository.owner.id == github.event.sender.id
     timeout-minutes: 360
     permissions:
       contents: write
     steps:
-      - name: Checkout device tree
+      - name: Check Out
         uses: actions/checkout@v4
         with:
           path: device-tree
 
-      - name: Disk check
+      - name: Display Inputs
+        run: |
+          echo "::group::Build Configuration"
+          echo "Runner: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}"
+          echo "Upload Release: ${{ github.event.inputs.upload_release }}"
+          echo "Release Tag: ${{ github.event.inputs.release_tag }}"
+          echo "::endgroup::"
+
+      - name: Disk check (before cleanup)
         run: df -h /
 
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/local/lib/android /opt/hostedtoolcache 2>/dev/null || true
-          sudo apt-get clean 2>/dev/null || true
-          df -h /
+      # 与 TWRP-Recovery-Builder-2024 相同的 runner 精简方案
+      - name: Cleanup
+        uses: rokibhasansagar/slimhub_actions@main
 
-      - name: Install build dependencies
-        run: |
-          DEBIAN_FRONTEND=noninteractive sudo apt-get update -yq
-          DEBIAN_FRONTEND=noninteractive sudo apt-get install -yq \
-            git-core gnupg flex bison gperf build-essential zip curl \
-            zlib1g-dev libc6-dev-i386 libncurses-dev libssl-dev x11proto-core-dev \
-            libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc unzip \
-            fontconfig python3 bc cpio ccache lz4
-          if ! command -v repo >/dev/null 2>&1; then
-            sudo curl -sS https://storage.googleapis.com/git-repo-downloads/repo \
-              -o /usr/local/bin/repo
-            sudo chmod +x /usr/local/bin/repo
-          fi
-          if [ ! -e /usr/bin/python ]; then
-            sudo ln -s /usr/bin/python3 /usr/bin/python
-          fi
-          python3 --version
-          repo --version || true
+      - name: Disk check (after cleanup)
+        run: df -h /
 
-      - name: Set up JDK 17
+      - name: Set Swap Space
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 24
+
+      - name: Prepare the environment
+        run: |
+          sudo apt update
+          sudo apt -y upgrade
+          sudo apt -y install gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib \
+            lib32ncurses5-dev x11proto-core-dev lib32z-dev libgl1-mesa-dev libxml2-utils \
+            xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libncurses5-dev \
+            libsdl1.2-dev libwxgtk3.0-gtk3-dev lzop pngcrush schedtool squashfs-tools \
+            imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev libtinfo5 \
+            libgflags-dev
+          sudo add-apt-repository universe
+          sudo apt -y install libncurses5
+          git config --global user.name "OrangeFox Builder"
+          git config --global user.email "builder@orangefox.local"
+
+      - name: Install OpenJDK
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: zulu
           java-version: '17'
 
-      - name: Set up swap space
+      - name: Install Git-Repo
         run: |
-          if ! swapon --show | grep -q swapfile; then
-            sudo fallocate -l 16G /swapfile
-            sudo chmod 600 /swapfile
-            sudo mkswap /swapfile
-            sudo swapon /swapfile
-          fi
-          free -h
+          mkdir ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          sudo ln -sf ~/bin/repo /usr/bin/repo
 
-      - name: Restore ccache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ofox-ccache-${{ github.ref_name }}-${{ github.sha }}
-          restore-keys: |
-            ofox-ccache-${{ github.ref_name }}-
-            ofox-ccache-
+      - name: Install Python 2 (legacy build helpers)
+        continue-on-error: true
+        run: |
+          sudo apt -y install python2
+          cd /usr/bin
+          sudo ln -sf python2 python
 
       - name: Sync OrangeFox 14.1 sources (official sync script)
         run: |
@@ -130,10 +135,9 @@ jobs:
 
       - name: Build vendor_boot
         run: |
-          ccache -M 8G || true
-          ccache -z || true
           cd "$FOX_TREE"
           source build/envsetup.sh
+          export ALLOW_MISSING_DEPENDENCIES=true
           lunch twrp_dash-ap2a-eng
           m installclean
           m -j$(nproc --all) vendorbootimage
@@ -147,7 +151,6 @@ jobs:
           echo "OUTPUT_IMAGE=$FOX_TREE/$IMG" >> "$GITHUB_ENV"
           bash "$FOX_TREE/device/xiaomi/dash/package-vendor-boot.sh" \
             "$FOX_TREE" "$FOX_TREE/$IMG"
-          ccache -s || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
