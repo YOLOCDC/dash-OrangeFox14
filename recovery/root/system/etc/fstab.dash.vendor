@@ -1,0 +1,5 @@
+# Keep this recovery-init mount outside recovery.fstab so PartitionManager
+# does not expose /vendor as a storage or image-flash target. The rows are
+# official vendor rows, retaining AVB while omitting only first-stage handling.
+vendor /vendor erofs ro wait,slotselect,avb,logical
+vendor /vendor ext4 ro wait,slotselect,avb,logical

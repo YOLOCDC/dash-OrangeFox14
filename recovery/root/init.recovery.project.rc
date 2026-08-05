@@ -1,0 +1,114 @@
+on early-init
+    restorecon /system/bin/hw/android.hardware.boot-service.mtk_recovery
+    mkdir /odm 0755 root root
+    mkdir /usb_otg 0755 root root
+    mkdir /mnt/vendor 0755 root root
+    mkdir /mnt/vendor/persist 0755 root root
+    # Recovery has no mounted /data before FBE unlock. Keep MITEe's official
+    # working path in the ramdisk rootfs until the real data filesystem mounts.
+    mkdir /data/vendor 0755 system system
+    mkdir /data/vendor/mitee 0755 system system
+    restorecon_recursive /data/vendor/mitee
+    mount_all /system/etc/fstab.dash.odm --early
+    mount_all /system/etc/fstab.dash.persist --early
+    restorecon_recursive /mnt/vendor/persist
+
+on property:servicemanager.ready=true
+    start vendor.boot-default
+
+service tee-supplicant /vendor/bin/tee-supplicant
+    class core
+    user system
+    group system secure_element nfc
+    capabilities SYS_RAWIO
+    disabled
+    setenv LD_LIBRARY_PATH /system/lib64:/vendor/lib64:/odm/lib64:/vendor/lib64/hw:/odm/lib64/hw
+
+service vendor.keymint-mitee /vendor/bin/hw/android.hardware.security.keymint@3.0-service.mitee
+    class early_hal
+    user system
+    group system drmrpc
+    disabled
+    # Keep private security libraries in vendor while using Recovery Binder.
+    setenv LD_CONFIG_FILE /system/etc/ld.config.dash-crypto.txt
+    setenv LD_LIBRARY_PATH /odm/lib64:/vendor/lib64:/vendor/lib64/hw:/vendor/lib64/egl
+
+service vendor.gatekeeper_mitee /vendor/bin/hw/android.hardware.gatekeeper-service.mitee
+    class hal
+    user system
+    group system
+    disabled
+    setenv LD_CONFIG_FILE /system/etc/ld.config.dash-crypto.txt
+    setenv LD_LIBRARY_PATH /odm/lib64:/vendor/lib64:/vendor/lib64/hw:/vendor/lib64/egl
+
+service vendor.weaver_nxp /vendor/bin/hw/android.hardware.weaver-service.nxp
+    class hal
+    user 2902
+    group system drmrpc
+    capabilities WAKE_ALARM
+    disabled
+    setenv LD_LIBRARY_PATH /system/lib64:/vendor/lib64:/odm/lib64:/vendor/lib64/hw:/odm/lib64/hw
+
+service vendor.secure_element_hal_service /vendor/bin/hw/vendor.xiaomi.hardware.secure_element-service
+    class early_hal
+    user system
+    group system secure_element nfc
+    disabled
+    setenv LD_LIBRARY_PATH /system/lib64:/vendor/lib64:/odm/lib64:/vendor/lib64/hw:/odm/lib64/hw
+
+on property:twrp.modules.loaded=true
+    wait /sys/class/touch/touch_dev/enable_touch_raw 5
+    write /sys/class/touch/touch_dev/enable_touch_raw 0
+    trigger dash_vendor_runtime
+
+on dash_vendor_runtime
+    # Recovery's CPIO files initially carry rootfs labels. Vendor HALs link
+    # through /system, so apply the generated Recovery file contexts first.
+    restorecon_recursive /system
+    # KernelModuleLoader releases /vendor before setting twrp.modules.loaded.
+    # Re-mount the official logical vendor partition before any vendor waits.
+    mount_all /system/etc/fstab.dash.vendor --early
+    wait /vendor/bin/hw/android.hardware.security.keymint@3.0-service.mitee 10
+    wait /vendor/bin/hw/android.hardware.gatekeeper-service.mitee 10
+    wait /vendor/bin/hw/android.hardware.weaver-service.nxp 10
+    wait /vendor/bin/hw/vendor.xiaomi.hardware.secure_element-service 10
+    restorecon_recursive /mnt/vendor/persist
+    mkdir /mnt/vendor/persist/data 0755 system system
+    restorecon_recursive /mnt/vendor/persist/data
+    chmod 0660 /dev/tee0
+    chmod 0660 /dev/teepriv0
+    chown system system /dev/tee0
+    chown system system /dev/teepriv0
+    chmod 0660 /dev/rpmb0
+    chmod 0660 /dev/mmcblk0rpmb
+    chmod 0660 /dev/0:0:0:49476
+    chmod 0660 /dev/st54spi
+    chmod 0660 /dev/ufs-bsg0
+    chown system system /dev/rpmb0
+    chown system system /dev/mmcblk0rpmb
+    chown system system /dev/0:0:0:49476
+    chown nfc nfc /dev/st54spi
+    chown system system /dev/ufs-bsg0
+    chmod 0666 /dev/kmsg
+    wait /dev/p73 5
+    restorecon /dev/p73
+    chmod 0660 /dev/p73
+    chown nfc nfc /dev/p73
+    wait /vendor/bin/tee-supplicant 10
+    start tee-supplicant
+    setprop vendor.teefs_state ready
+
+on property:twrp.modules.loaded=true && property:init.svc.tee-supplicant=running
+    wait /system_root/system/lib64/libbinder.so 10
+    exec -- /system/bin/sleep 2
+    start vendor.keymint-mitee
+
+on property:twrp.modules.loaded=true && property:init.svc.vendor.keymint-mitee=running
+    start vendor.gatekeeper_mitee
+    start vendor.weaver_nxp
+
+on property:twrp.modules.loaded=true && property:init.svc.vendor.gatekeeper_mitee=running && property:init.svc.vendor.weaver_nxp=running
+    start vendor.secure_element_hal_service
+
+on property:twrp.modules.loaded=true && property:init.svc.vendor.secure_element_hal_service=running
+    start se_omapi

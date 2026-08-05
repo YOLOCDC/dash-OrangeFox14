@@ -1,0 +1,79 @@
+# Only recovery paths used by the official Mitee FBE service set are labeled.
+type dash_tee_storage_device, dev_type;
+type dash_st54spi_device, dev_type;
+type dash_mitee_data_file, file_type;
+type persist_block_device, dev_type;
+type persist_data_file, file_type, data_file_type;
+type mitee_sfs_file, file_type;
+type vendor_persist_drm_file, file_type;
+type dash_mitee_client_device, dev_type;
+type dash_teei_client_device, dev_type;
+type dash_teei_rpmb_device, dev_type;
+type dash_mobicore_user_device, dev_type;
+
+vendor_restricted_prop(dash_teefs_prop)
+
+allow tee self:capability sys_rawio;
+allow tee nfc_device:chr_file { ioctl read write open };
+allow tee kmsg_device:chr_file { open write lock append map };
+allow tee dash_tee_storage_device:chr_file rw_file_perms;
+allow tee dash_tee_storage_device:blk_file rw_file_perms;
+allow tee dash_mitee_client_device:chr_file rw_file_perms;
+allow tee dash_teei_client_device:chr_file rw_file_perms;
+allow tee dash_teei_rpmb_device:chr_file rw_file_perms;
+allow tee dash_teei_rpmb_device:blk_file rw_file_perms;
+allow tee mnt_vendor_file:dir search;
+allow tee dash_mitee_data_file:dir create_dir_perms;
+allow tee dash_mitee_data_file:file create_file_perms;
+allow tee { persist_data_file mitee_sfs_file }:dir { create_dir_perms relabelto };
+allow tee { persist_data_file mitee_sfs_file }:file { create_file_perms relabelto };
+get_prop(tee, dash_teefs_prop)
+set_prop(tee, dash_teefs_prop)
+
+allow hal_keymint_default mnt_vendor_file:dir search;
+allow hal_keymint_default kmsg_device:chr_file { ioctl read write getattr lock append map open watch watch_reads };
+allow hal_keymint_default dash_mitee_data_file:dir create_dir_perms;
+allow hal_keymint_default dash_mitee_data_file:file create_file_perms;
+allow hal_keymint_default { persist_data_file mitee_sfs_file }:dir { create_dir_perms relabelto };
+allow hal_keymint_default { persist_data_file mitee_sfs_file }:file { create_file_perms relabelto };
+allow hal_keymint_default dash_mitee_client_device:chr_file rw_file_perms;
+allow hal_keymint_default dash_teei_client_device:chr_file rw_file_perms;
+allow hal_keymint_default dash_mobicore_user_device:chr_file rw_file_perms;
+get_prop(hal_keymint_default, dash_teefs_prop)
+set_prop(hal_keymint_default, dash_teefs_prop)
+
+allow hal_gatekeeper_default dash_mitee_client_device:chr_file rw_file_perms;
+allow hal_gatekeeper_default dash_teei_client_device:chr_file rw_file_perms;
+allow hal_gatekeeper_default dash_mobicore_user_device:chr_file rw_file_perms;
+get_prop(hal_gatekeeper_default, dash_teefs_prop)
+set_prop(hal_gatekeeper_default, dash_teefs_prop)
+
+allow hal_secure_element_default nfc_device:chr_file { ioctl read write open };
+allow hal_secure_element_default dash_st54spi_device:chr_file { open read write };
+allow hal_secure_element_default dash_mitee_client_device:chr_file rw_file_perms;
+allow hal_secure_element_default dash_teei_client_device:chr_file rw_file_perms;
+allow hal_secure_element_default mnt_vendor_file:dir search;
+allow hal_secure_element_default mitee_sfs_file:dir create_dir_perms;
+allow hal_secure_element_default mitee_sfs_file:file create_file_perms;
+
+hal_client_domain(hal_weaver_default, hal_secure_element)
+get_prop(hal_weaver_default, boot_status_prop);
+allow hal_weaver_default secure_element_service:service_manager find;
+allow hal_weaver_default secure_element:binder { call transfer };
+allow hal_weaver_default self:capability2 wake_alarm;
+
+recovery_only(`
+  # Recovery clients use these official AIDL HALs for FBE and OMAPI.
+  # Weaver also needs the observed Binder return path to Recovery.
+  hal_client_domain(recovery, hal_weaver)
+  hal_client_domain(recovery, hal_secure_element)
+  # KeyMint also advertises the SharedSecret service needed by FBE.
+  hal_client_domain(recovery, hal_keymint)
+  allow recovery keystore_service:service_manager find;
+  binder_call(hal_weaver_default, recovery)
+  binder_call(hal_keymint_default, recovery)
+  binder_call(hal_gatekeeper_default, recovery)
+  # CS40L26 exposes Recovery haptics through its force-feedback input node.
+  # Base Recovery policy already grants open/read/ioctl; EV_FF also needs write.
+  allow recovery input_device:chr_file write;
+')

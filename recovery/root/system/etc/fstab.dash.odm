@@ -1,0 +1,6 @@
+# Recovery init must not use first_stage_mount: mount_all skips such entries in Recovery.
+# Do not request a second AVB/verity mapping in Recovery; first-stage already
+# creates /dev/block/mapper/odm_<slot>, and raw read-only mounting keeps the
+# official ODM firmware available for touch and haptics.
+odm /odm erofs ro wait,slotselect,logical
+odm /odm ext4 ro wait,slotselect,logical
