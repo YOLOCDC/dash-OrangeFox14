@@ -52,12 +52,18 @@ bash device/xiaomi/dash/package-vendor-boot.sh ~/fox_14.1 ~/fox_14.1/vendor_boot
 
 ## CI
 GitHub Actions：
-- `.github/workflows/build.yml` —— 完整构建（workflow_dispatch / push main）。
-  **标准 ubuntu-22.04 runner 即可**（内置 slimhub 清理 + 24G swap，与
+- `.github/workflows/build.yml` —— 完整构建 + **提取 F1**（workflow_dispatch /
+  push main）。标准 ubuntu-22.04 runner（内置 slimhub 清理 + 24G swap，与
   TWRP-Recovery-Builder-2024 同款方案）。可选 `patches/*.patch` 复现 EV_FF
   触觉补丁。
+- **CI 不打包最终 vendor_boot**（一次构建 1.5h+，不适合试打包参数）——
+  artifact = `recovery-fragment.cpio.gz`（F1）+ built vendor_boot.img 备查。
+- 本地组装（原厂 F0 + CI F1 + AVB）：
+  ```bash
+  bash device/xiaomi/dash/package-vendor-boot.sh ~/fox_14.1 ~/out.img ~/recovery-fragment.cpio.gz
+  ```
 - `.github/workflows/verify.yml` —— 快速自检（push/PR 触发）：shell 语法、
-  prebuilt 哈希与脚本常量交叉校验、cmdline 一致性。
+  prebuilt 哈希与脚本常量交叉校验、cmdline 一致性、脚本可执行位。
 
 ## 分区/格式说明（dash）
 - 刷入: `fastboot flash vendor_boot <img>`

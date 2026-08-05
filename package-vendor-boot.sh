@@ -105,9 +105,10 @@ PY
     fi
 }
 
-[ "$#" -eq 2 ] || die "usage: $0 /absolute/path/to/source /absolute/path/to/vendor_boot.img"
+[ "$#" -ge 2 ] && [ "$#" -le 3 ] || die "usage: $0 /absolute/path/to/source /absolute/path/to/vendor_boot.img [/absolute/path/to/recovery-fragment.cpio.gz]"
 source_root=$1
 output_image=$2
+external_f1=${3:-}
 case "$source_root" in
     /*) ;;
     *) die "source path must be absolute" ;;
@@ -116,6 +117,13 @@ case "$output_image" in
     /*) ;;
     *) die "output path must be absolute" ;;
 esac
+if [ -n "$external_f1" ]; then
+    case "$external_f1" in
+        /*) ;;
+        *) die "recovery fragment path must be absolute" ;;
+    esac
+    [ -f "$external_f1" ] || die "missing recovery fragment: $external_f1"
+fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 platform_gzip="$script_dir/prebuilt/vendor_ramdisk/platform.cpio.gz"
@@ -124,10 +132,14 @@ built_vendor_boot="$source_root/out/target/product/dash/vendor_boot.img"
 mkbootimg="$source_root/system/tools/mkbootimg/mkbootimg.py"
 unpack_bootimg="$source_root/system/tools/mkbootimg/unpack_bootimg.py"
 avbtool="$source_root/external/avb/avbtool.py"
-for input in "$platform_gzip" "$dtb" "$built_vendor_boot" "$mkbootimg" "$unpack_bootimg" "$avbtool"
+for input in "$platform_gzip" "$dtb" "$mkbootimg" "$unpack_bootimg" "$avbtool"
 do
     [ -f "$input" ] || die "missing input: $input"
 done
+# 无外部 F1 时，recovery fragment 从构建产物 vendor_boot.img 提取
+if [ -z "$external_f1" ]; then
+    [ -f "$built_vendor_boot" ] || die "missing input: $built_vendor_boot"
+fi
 
 gzip -t "$platform_gzip"
 require_sha256 "$PLATFORM_GZIP_SHA256" "$platform_gzip"
@@ -155,18 +167,22 @@ max_preavb_size=$(python3 "$avbtool" add_hash_footer \
     die "unexpected AVB maximum image size: $max_preavb_size"
 
 
-python3 "$unpack_bootimg" --boot_img "$built_vendor_boot" --out "$work/built" > "$work/built-info.txt"
-recovery_fragment="$work/built/vendor_ramdisk01"
-awk '
-    /^vendor boot image header version: 4$/ { header_v4 = 1 }
-    /^    vendor_ramdisk01: \{$/ { recovery = 1; next }
-    recovery && /^        type: 0x2$/ { recovery_type = 1 }
-    recovery && /^        name: recovery$/ { recovery_name = 1 }
-    recovery && /^    }$/ { recovery = 0 }
-    END { exit !(header_v4 && recovery_type && recovery_name) }
-' "$work/built-info.txt" ||
-    die "built vendor_boot does not contain the expected v4 recovery fragment"
-[ -f "$recovery_fragment" ] || die "built recovery fragment is missing"
+if [ -n "$external_f1" ]; then
+    recovery_fragment="$external_f1"
+else
+    python3 "$unpack_bootimg" --boot_img "$built_vendor_boot" --out "$work/built" > "$work/built-info.txt"
+    awk '
+        /^vendor boot image header version: 4$/ { header_v4 = 1 }
+        /^    vendor_ramdisk01: \{$/ { recovery = 1; next }
+        recovery && /^        type: 0x2$/ { recovery_type = 1 }
+        recovery && /^        name: recovery$/ { recovery_name = 1 }
+        recovery && /^    }$/ { recovery = 0 }
+        END { exit !(header_v4 && recovery_type && recovery_name) }
+    ' "$work/built-info.txt" ||
+        die "built vendor_boot does not contain the expected v4 recovery fragment"
+    recovery_fragment="$work/built/vendor_ramdisk01"
+    [ -f "$recovery_fragment" ] || die "built recovery fragment is missing"
+fi
 gzip -t "$recovery_fragment"
 
 gzip -dc "$recovery_fragment" > "$work/recovery.cpio"

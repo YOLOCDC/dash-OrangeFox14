@@ -98,10 +98,26 @@ m installclean
 m vendorbootimage
 ```
 
-Package the official platform fragment and the generated Recovery fragment
-with the tree's `package-vendor-boot.sh` script. The script validates the
-platform ramdisk, DTB, Recovery modules, fragment order, partition size, and
-AVB footer before publishing the final image.
+The built `out/target/product/dash/vendor_boot.img` carries the fresh
+Recovery fragment (F1) — the AOSP-built platform fragment (F0) is **not**
+used and never enters the final image.
+
+### Assembling the final image (local, fast iteration)
+
+The final `vendor_boot` is **original stock F0 + built F1** with the AVB
+footer — assembled locally with `package-vendor-boot.sh` (CI builds take
+1.5h+, so packaging experiments belong on a local machine):
+
+```bash
+# from the built tree (F1 extracted from out/target/product/dash/vendor_boot.img)
+bash device/xiaomi/dash/package-vendor-boot.sh ~/fox_14.1 ~/vendor_boot-test.img
+
+# or with a CI-produced fragment (artifact `recovery-fragment.cpio.gz`)
+bash device/xiaomi/dash/package-vendor-boot.sh ~/fox_14.1 ~/vendor_boot-test.img ~/recovery-fragment.cpio.gz
+```
+
+The script validates the platform ramdisk, DTB, Recovery modules, fragment
+order, partition size, and AVB footer before publishing the final image.
 
 `build.sh` (inside the synced tree at `device/xiaomi/dash/`) runs the whole
 release path end-to-end.
