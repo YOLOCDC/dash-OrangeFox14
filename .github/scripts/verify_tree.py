@@ -84,6 +84,22 @@ def main() -> None:
         text = script.read_text(encoding="utf-8", errors="replace")
         if "/home/twrp" in text:
             die(f"{script.name}: hardcoded /home/twrp path")
+
+    # scripts executed directly by the build (BOARD_RECOVERY_IMAGE_PREPARE,
+    # BOARD_CUSTOM_MKBOOTIMG, init rc) MUST carry the executable bit
+    executable = [
+        "build.sh",
+        "package-vendor-boot.sh",
+        "extract-official-prebuilts.sh",
+        "recovery/prepare-ramdisk.sh",
+        "recovery/root/system/bin/beforemodules.sh",
+        "recovery/root/system/bin/postrecoveryboot.sh",
+        "scripts/mkbootimg-wrapper.sh",
+    ]
+    for rel in executable:
+        mode = (root / rel).stat().st_mode
+        if not mode & 0o111:
+            die(f"{rel} is not executable (mode {oct(mode & 0o777)})")
     for script in (root / "Android.mk", prepare):
         text = script.read_text(encoding="utf-8", errors="replace")
         if "patch-ap-touch-modules" in text:
