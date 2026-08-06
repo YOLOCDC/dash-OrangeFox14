@@ -77,7 +77,11 @@ GitHub Actions：
 - `prebuilt/dtb/dash.dtb` = dash 官方 vendor_boot 的 DTB
 - `prebuilt/recovery_modules/*.ko` = dash 恢复模式触摸模块（Novatek 三件套）
 - `prebuilt/recovery_properties/*.prop` = dash 官方 build.prop
-- `prebuilt/vendor_ramdisk/platform.cpio.gz` = **dash 官方完整 platform ramdisk（gzip）**
+- `prebuilt/vendor_ramdisk/platform.cpio.gz` = **dash 官方完整 platform ramdisk（gzip，原厂）**
+- `prebuilt/vendor_ramdisk/platform.slim.cpio.gz` = **大砍版 F0（打包默认用）**：
+  res/ 删除 + F1 覆盖库删除 + libc++ 保留（`tools/slim-platform.sh` 可再生，内容等价）
+- `prebuilt/recovery_modules/modules.dep` = **dash 305 平台原版 modules.dep**
+  （⚠️ 曾误用 dali/303 的依赖图，引用的模块 dash F0 里没有 → 打包校验必挂，已换回）
 - prebuilts 为 release 冻结；`extract-official-prebuilts.sh` 可用官方 OTA
   （OS3.0.305.0.WPLCNXM）重新校验/再生（不覆盖本地修改的 fstab/ueventd.rc）
 

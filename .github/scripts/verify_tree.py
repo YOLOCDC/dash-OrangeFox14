@@ -29,6 +29,22 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _cpio_extract(data: bytes) -> Path:
+    """Extract a cpio archive (newc) into a temp dir and return the root."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    dest = Path(tempfile.mkdtemp(prefix="verify-cpio-"))
+    proc = subprocess.run(
+        ["cpio", "-idmu", "--quiet"], input=data, cwd=dest, capture_output=True
+    )
+    if proc.returncode != 0:
+        shutil.rmtree(dest, ignore_errors=True)
+        die("cpio extraction failed")
+    return dest
+
+
 def load_constants(script: Path, names: tuple[str, ...]) -> dict[str, str]:
     """Parse `NAME=64hex` assignments from a shell script."""
     out: dict[str, str] = {}
@@ -60,6 +76,7 @@ def main() -> None:
         "prebuilt/kernel",
         "prebuilt/dtb/dash.dtb",
         "prebuilt/vendor_ramdisk/platform.cpio.gz",
+        "prebuilt/vendor_ramdisk/platform.slim.cpio.gz",
         "prebuilt/recovery_modules/scp.ko",
         "prebuilt/recovery_modules/nt38771_touch_dash.ko",
         "prebuilt/recovery_modules/xiaomi_touch_dash.ko",
@@ -91,6 +108,7 @@ def main() -> None:
         "build.sh",
         "package-vendor-boot.sh",
         "extract-official-prebuilts.sh",
+        "tools/slim-platform.sh",
         "recovery/prepare-ramdisk.sh",
         "recovery/root/system/bin/beforemodules.sh",
         "recovery/root/system/bin/postrecoveryboot.sh",
@@ -119,6 +137,9 @@ def main() -> None:
         (
             "PLATFORM_CPIO_SHA256",
             "PLATFORM_GZIP_SHA256",
+            "STOCK_CPIO_SHA256",
+            "STOCK_GZIP_SHA256",
+            "PLATFORM_LIBCPP_SHA256",
             "DTB_SHA256",
             "SCP_OUTPUT_SHA256",
             "NT38771_OUTPUT_SHA256",
@@ -126,12 +147,48 @@ def main() -> None:
             "MERGED_MODULES_DEP_SHA256",
         ),
     )
-    gzip_bytes = (root / "prebuilt/vendor_ramdisk/platform.cpio.gz").read_bytes()
-    if hashlib.sha256(gzip_bytes).hexdigest() != pkg_const["PLATFORM_GZIP_SHA256"]:
-        die("platform.cpio.gz != PLATFORM_GZIP_SHA256")
-    cpio_hash = hashlib.sha256(gzip.decompress(gzip_bytes)).hexdigest()
-    if cpio_hash != pkg_const["PLATFORM_CPIO_SHA256"]:
-        die("platform.cpio.gz(decompressed) != PLATFORM_CPIO_SHA256")
+    # slim platform (default packaging input) + stock platform (reference)
+    slim_gz = (root / "prebuilt/vendor_ramdisk/platform.slim.cpio.gz").read_bytes()
+    if hashlib.sha256(slim_gz).hexdigest() != pkg_const["PLATFORM_GZIP_SHA256"]:
+        die("platform.slim.cpio.gz != PLATFORM_GZIP_SHA256")
+    slim_cpio = gzip.decompress(slim_gz)
+    if hashlib.sha256(slim_cpio).hexdigest() != pkg_const["PLATFORM_CPIO_SHA256"]:
+        die("platform.slim.cpio.gz(decompressed) != PLATFORM_CPIO_SHA256")
+    stock_gz = (root / "prebuilt/vendor_ramdisk/platform.cpio.gz").read_bytes()
+    if hashlib.sha256(stock_gz).hexdigest() != pkg_const["STOCK_GZIP_SHA256"]:
+        die("platform.cpio.gz != STOCK_GZIP_SHA256")
+    if hashlib.sha256(gzip.decompress(stock_gz)).hexdigest() != pkg_const[
+        "STOCK_CPIO_SHA256"
+    ]:
+        die("platform.cpio.gz(decompressed) != STOCK_CPIO_SHA256")
+
+    # slim semantics: res/ empty, libc++.so kept, F1-covered libs removed
+    slim_root = _cpio_extract(slim_cpio)
+    res_files = [p for p in slim_root.rglob("*") if p.is_file() and "res" in p.parts]
+    if res_files:
+        die(f"slim platform res/ must be empty, found: {res_files[0]}")
+    if not (slim_root / "system/lib64/libc++.so").is_file():
+        die("slim platform must keep libc++.so (F1 has none; A16 platform libc++ fallback)")
+    removed_libs = [
+        "ld-android.so", "libasyncio.so", "libbase.so", "libbinder_ndk.so",
+        "libbootloader_message.so", "libcrypto.so", "libcrypto_utils.so",
+        "libcutils.so", "libdl.so", "libext2_blkid.so", "libext2_com_err.so",
+        "libext2fs.so", "libext2_misc.so", "libext2_quota.so", "libext2_uuid.so",
+        "libext4_utils.so", "libfec.so", "libfs_mgr.so", "libgsi.so", "liblog.so",
+        "liblp.so", "libm.so", "libpackagelistparser.so", "libpcre2.so",
+        "libprotobuf-cpp-lite.so", "libselinux.so", "libsparse.so",
+        "libsquashfs_utils.so", "libutils.so", "libz.so",
+    ]
+    for lib in removed_libs:
+        if (slim_root / "system/lib64" / lib).exists():
+            die(f"slim platform must not contain {lib} (F1 provides it)")
+
+    # libc++ expected value: merged rootfs libc++ == platform A16 libc++
+    stock_libcpp = _cpio_extract(gzip.decompress(stock_gz)) / "system/lib64/libc++.so"
+    if hashlib.sha256(stock_libcpp.read_bytes()).hexdigest() != pkg_const[
+        "PLATFORM_LIBCPP_SHA256"
+    ]:
+        die("platform libc++.so != PLATFORM_LIBCPP_SHA256")
 
     pkg_map = {
         "DTB_SHA256": "prebuilt/dtb/dash.dtb",
@@ -187,15 +244,15 @@ def main() -> None:
         if sha256_file(root / rel) != m.group(1):
             die(f"{rel} != extract script expected hash")
 
-    # platform ramdisk conversion targets
-    for const, rel, note in (
-        ("9ece806a35c1f75a72aa87a2b2d9bdec480805672610c8732f7bdb6646072e03",
-         "prebuilt/vendor_ramdisk/platform.cpio.gz", "cpio"),
-        ("ef0aee35573a8b94e4fc08c34343f23bb09d3ac1a7637fcf422f6fb1e529af44",
-         "prebuilt/vendor_ramdisk/platform.cpio.gz", "gzip"),
+    # platform ramdisk conversion targets (extract script regenerates the
+    # STOCK platform from the OTA — values must match the committed stock file)
+    stock_gz_bytes = (root / "prebuilt/vendor_ramdisk/platform.cpio.gz").read_bytes()
+    for const, note, actual in (
+        (pkg_const["STOCK_CPIO_SHA256"], "cpio",
+         hashlib.sha256(gzip.decompress(stock_gz_bytes)).hexdigest()),
+        (pkg_const["STOCK_GZIP_SHA256"], "gzip",
+         hashlib.sha256(stock_gz_bytes).hexdigest()),
     ):
-        actual = (cpio_hash if note == "cpio"
-                  else hashlib.sha256(gzip_bytes).hexdigest())
         if actual != const:
             die(f"extract script {note} target hash drift for platform ramdisk")
 
@@ -224,7 +281,8 @@ def main() -> None:
         die("cmdline must not contain erofs (dash stock has none)")
 
     print("All tree consistency checks passed.")
-    print(f"  platform.cpio.gz: {cpio_hash[:16]}... ({len(gzip_bytes)} B)")
+    print(f"  platform.slim.cpio.gz: {pkg_const['PLATFORM_CPIO_SHA256'][:16]}... ({len(slim_gz)} B)")
+    print(f"  platform.cpio.gz (stock): {pkg_const['STOCK_CPIO_SHA256'][:16]}... ({len(stock_gz)} B)")
     print(f"  cmdline: {cmdline}")
 
 

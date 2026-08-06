@@ -55,6 +55,12 @@ conversion. It deliberately does **not** overwrite `recovery.fstab` /
 `ueventd.rc`, which carry local modifications (FBE device-node flags, Mitee
 rules) on top of the official baseline.
 
+`prebuilt/vendor_ramdisk/platform.slim.cpio.gz` is the **slimmed stock
+platform F0** used for packaging (dali-style: `res/` removed, F1-covered
+libraries removed, `libc++.so` kept for the A16 platform fallback —
+see `tools/slim-platform.sh`). The stock platform remains committed as the
+regeneration source.
+
 ## Included functionality
 
 - Novatek (NT38771) / Xiaomi Touch Recovery module integration with merged
@@ -114,10 +120,15 @@ bash device/xiaomi/dash/package-vendor-boot.sh ~/fox_14.1 ~/vendor_boot-test.img
 
 # or with a CI-produced fragment (artifact `recovery-fragment.cpio.gz`)
 bash device/xiaomi/dash/package-vendor-boot.sh ~/fox_14.1 ~/vendor_boot-test.img ~/recovery-fragment.cpio.gz
+
+# explicit platform override (default: slim; stock allowed for comparison)
+bash device/xiaomi/dash/package-vendor-boot.sh ~/fox_14.1 ~/vendor_boot-test.img ~/f1.cpio.gz ~/platform.cpio.gz
 ```
 
 The script validates the platform ramdisk, DTB, Recovery modules, fragment
 order, partition size, and AVB footer before publishing the final image.
+Current budget (verified 2026-08-06): slim F0 29.9 MB + F1 ≈ 25.3 MB →
+pre-AVB ≈ 55.8 MB, ~11 MB headroom in the 64 MB partition.
 
 `build.sh` (inside the synced tree at `device/xiaomi/dash/`) runs the whole
 release path end-to-end.

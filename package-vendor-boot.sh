@@ -3,16 +3,19 @@ set -eu
 
 PARTITION_SIZE=67108864
 MAX_PREAVB_SIZE=67039232
-PLATFORM_CPIO_SHA256=9ece806a35c1f75a72aa87a2b2d9bdec480805672610c8732f7bdb6646072e03
-PLATFORM_LIBCPP_SHA256=69bc8ad4bd7a8613dbc30c4925c74194deb3e7df11c9a2bce7acea29c096787a
-PLATFORM_GZIP_SHA256=ef0aee35573a8b94e4fc08c34343f23bb09d3ac1a7637fcf422f6fb1e529af44
+PLATFORM_CPIO_SHA256=365b823f3824f6647d032eb006ba4fd6fdbe96a3aac8088da7d8b442d48cefbe
+PLATFORM_GZIP_SHA256=75e4878620076cb65d6bf7220d26ede6b42df194d10b64af2c56be95fb1c8dda
+# 原厂 platform（对照/再生成源，tools/slim-platform.sh 的输入）
+STOCK_CPIO_SHA256=9ece806a35c1f75a72aa87a2b2d9bdec480805672610c8732f7bdb6646072e03
+STOCK_GZIP_SHA256=ef0aee35573a8b94e4fc08c34343f23bb09d3ac1a7637fcf422f6fb1e529af44
+PLATFORM_LIBCPP_SHA256=794eb8fafd7be35da3725e9ec0b15189c6f4f2544f5b78afd8a647dde5b69195
 DTB_SHA256=2636d5a861e909f5bf32fb3b5c80b25824fbb6591e31a21b6b1326b6dc52d7e3
 AVB_SALT=01b91678eb9d1a40c6e012ce76745b0561a8be6a5867c0b3a5ccc7051e3dbc48
 AVB_FINGERPRINT=alps/hal_mgvi_64_64only_armv82/mgvi_64_64only_armv82:15/AP3A.240905.015.A2/OS3.0.305.0.WPLCNXM:user/release-keys
 SCP_OUTPUT_SHA256=7dd0abf1bdcc804ac2ae077debc52c0646c163b80df505ca99e7713cce297db6
 NT38771_OUTPUT_SHA256=b773b1cb3b8004e0f31773a941c728d70ec6f9dddde969fa40c7fff54f51aaca
 XIAOMI_TOUCH_SHA256=e4aabc877e0a3af7c0015d63940e50faa41ac391468bf38b0e42670c38c020dc
-MERGED_MODULES_DEP_SHA256=dd972abacb2c2cd5475903b8ad681c9985d0a3be67fd2e6f65c812305be8034c
+MERGED_MODULES_DEP_SHA256=3fc3c92f2885103cd5d7e457358b72abdf33ee6d6f573c2d8f41079d5b9f677a
 
 die() {
     echo "$*" >&2
@@ -105,10 +108,11 @@ PY
     fi
 }
 
-[ "$#" -ge 2 ] && [ "$#" -le 3 ] || die "usage: $0 /absolute/path/to/source /absolute/path/to/vendor_boot.img [/absolute/path/to/recovery-fragment.cpio.gz]"
+[ "$#" -ge 2 ] && [ "$#" -le 4 ] || die "usage: $0 /absolute/path/to/source /absolute/path/to/vendor_boot.img [/absolute/path/to/recovery-fragment.cpio.gz] [/absolute/path/to/platform.cpio.gz]"
 source_root=$1
 output_image=$2
 external_f1=${3:-}
+external_pf=${4:-}
 case "$source_root" in
     /*) ;;
     *) die "source path must be absolute" ;;
@@ -124,9 +128,17 @@ if [ -n "$external_f1" ]; then
     esac
     [ -f "$external_f1" ] || die "missing recovery fragment: $external_f1"
 fi
+if [ -n "$external_pf" ]; then
+    case "$external_pf" in
+        /*) ;;
+        *) die "platform path must be absolute" ;;
+    esac
+    [ -f "$external_pf" ] || die "missing platform: $external_pf"
+fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-platform_gzip="$script_dir/prebuilt/vendor_ramdisk/platform.cpio.gz"
+# 默认 platform = slim 版（原厂大砍：res/ 删除 + F1 覆盖库删除，见 tools/slim-platform.sh）
+platform_gzip="${external_pf:-$script_dir/prebuilt/vendor_ramdisk/platform.slim.cpio.gz}"
 dtb="$script_dir/prebuilt/dtb/dash.dtb"
 built_vendor_boot="$source_root/out/target/product/dash/vendor_boot.img"
 mkbootimg="$source_root/system/tools/mkbootimg/mkbootimg.py"
@@ -142,7 +154,20 @@ if [ -z "$external_f1" ]; then
 fi
 
 gzip -t "$platform_gzip"
-require_sha256 "$PLATFORM_GZIP_SHA256" "$platform_gzip"
+# 按 platform 文件选择对应哈希对（slim 默认 / stock 对照）
+pf_gzip_hash=$(file_sha256 "$platform_gzip")
+case "$pf_gzip_hash" in
+    "$PLATFORM_GZIP_SHA256")
+        pf_cpio_hash=$PLATFORM_CPIO_SHA256
+        ;;
+    "$STOCK_GZIP_SHA256")
+        pf_cpio_hash=$STOCK_CPIO_SHA256
+        echo "NOTE: using STOCK platform (unslimmed)"
+        ;;
+    *)
+        die "unexpected platform gzip sha256: $pf_gzip_hash"
+        ;;
+esac
 output_dir=$(dirname -- "$output_image")
 mkdir -p "$output_dir"
 work=$(mktemp -d "$output_dir/.dash-vendor-boot.XXXXXX")
@@ -154,7 +179,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 gzip -dc "$platform_gzip" > "$work/platform.cpio"
-require_sha256 "$PLATFORM_CPIO_SHA256" "$work/platform.cpio"
+require_sha256 "$pf_cpio_hash" "$work/platform.cpio"
 require_sha256 "$DTB_SHA256" "$dtb"
 max_preavb_size=$(python3 "$avbtool" add_hash_footer \
     --partition_size "$PARTITION_SIZE" \
