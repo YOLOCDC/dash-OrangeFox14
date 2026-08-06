@@ -110,6 +110,7 @@ def main() -> None:
         "extract-official-prebuilts.sh",
         "tools/slim-platform.sh",
         "recovery/prepare-ramdisk.sh",
+        "recovery/root/system/bin/touch_report_debug",
         "recovery/root/system/bin/beforemodules.sh",
         "recovery/root/system/bin/postrecoveryboot.sh",
         "scripts/mkbootimg-wrapper.sh",
