@@ -164,11 +164,12 @@ source used for a public release must also be published.
    `.sha256`) uploaded as an artifact, optionally published to a GitHub
    Release (draft).
 
-**Runner**: 默认标准 `ubuntu-22.04` runner 即可 —— workflow 内置与
-TWRP-Recovery-Builder-2024 相同的精简方案（`slimhub_actions` 清理 + 24G
-swap）。实际同步规模 ≈674 个项目（`twrp-default.xml` + `remove-minimal.xml`
-裁剪），比 TWRP-A16 的 990 个项目还小。需要更大机器时可在
-`workflow_dispatch` 的 `runner` 输入覆盖（larger runner / self-hosted）。
+**Runner**: the default standard `ubuntu-22.04` runner is sufficient — the
+workflow ships the same slimming scheme as TWRP-Recovery-Builder-2024
+(`slimhub_actions` cleanup + 24G swap). The actual sync is ≈674 projects
+(`twrp-default.xml` + `remove-minimal.xml` trimmed), smaller than TWRP-A16's
+990 projects. For bigger machines, override the `runner` input at
+`workflow_dispatch` (larger runner / self-hosted).
 
 `.github/workflows/verify.yml` runs cheap tree-sanity checks on every push/PR:
 shell syntax, prebuilt hash cross-checks against all script constants, and
