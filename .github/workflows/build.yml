@@ -1,0 +1,178 @@
+name: Build OrangeFox 14.1 vendor_boot
+
+# 完整构建管线：官方 OrangeFox 14.1 sync -> 设备树 -> vendorbootimage
+# -> 提取 recovery fragment (F1) 上传 artifact。
+#
+# ⚠️ CI 只产出 F1（recovery fragment）+ built vendor_boot 备查，不在 CI 打包
+# 最终镜像 —— 组装（原厂 F0 + F1 + AVB footer）在本地用
+# package-vendor-boot.sh 做，一次构建 1.5h+，不适合在 CI 里试打包参数。
+#
+# Runner：默认标准 ubuntu-22.04（与 TWRP-Recovery-Builder-2024 同款精简方案：
+# slimhub_actions 清理 + 24G swap）。树规模 ≈674 个项目（twrp-default.xml +
+# remove-minimal.xml 裁剪），比 TWRP-A16 的 990 个项目还小。
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: >-
+          Runner label（默认 ubuntu-22.04；可填 larger runner 或 self-hosted 标签）
+        required: true
+        default: ubuntu-22.04
+  push:
+    branches: [main]
+
+env:
+  ALLOW_MISSING_DEPENDENCIES: "true"
+  LC_ALL: "C"
+  FOX_BUILD_DEVICE: dash
+  FOX_TREE: ${{ github.workspace }}/fox_14.1
+  DEVICE_TREE: ${{ github.workspace }}/device-tree
+
+jobs:
+  build:
+    name: Build OrangeFox 14.1 by ${{ github.actor }}
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
+    if: github.event.repository.owner.id == github.event.sender.id
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    steps:
+      - name: Check Out
+        uses: actions/checkout@v4
+        with:
+          path: device-tree
+
+      - name: Display Inputs
+        run: |
+          echo "::group::Build Configuration"
+          echo "Runner: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}"
+          echo "::endgroup::"
+
+      - name: Disk check (before cleanup)
+        run: df -h /
+
+      # 与 TWRP-Recovery-Builder-2024 相同的 runner 精简方案
+      - name: Cleanup
+        uses: rokibhasansagar/slimhub_actions@main
+
+      - name: Disk check (after cleanup)
+        run: df -h /
+
+      - name: Set Swap Space
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 24
+
+      - name: Prepare the environment
+        run: |
+          sudo apt update
+          sudo apt -y upgrade
+          sudo apt -y install gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib \
+            lib32ncurses5-dev x11proto-core-dev lib32z-dev libgl1-mesa-dev libxml2-utils \
+            xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libncurses5-dev \
+            libsdl1.2-dev libwxgtk3.0-gtk3-dev lzop pngcrush schedtool squashfs-tools \
+            imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev libtinfo5 \
+            libgflags-dev
+          sudo add-apt-repository universe
+          sudo apt -y install libncurses5
+          git config --global user.name "OrangeFox Builder"
+          git config --global user.email "builder@orangefox.local"
+
+      - name: Install OpenJDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '17'
+
+      - name: Install Git-Repo
+        run: |
+          mkdir ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          sudo ln -sf ~/bin/repo /usr/bin/repo
+
+      - name: Install Python 2 (legacy build helpers)
+        continue-on-error: true
+        run: |
+          sudo apt -y install python2
+          cd /usr/bin
+          sudo ln -sf python2 python
+
+      - name: Sync OrangeFox 14.1 sources (official sync script)
+        run: |
+          git clone --depth=1 https://gitlab.com/OrangeFox/sync.git /tmp/ofox-sync
+          cd /tmp/ofox-sync
+          ./orangefox_sync.sh --branch 14.1 --path "$FOX_TREE"
+        timeout-minutes: 180
+
+      - name: Install device tree
+        run: |
+          mkdir -p "$FOX_TREE/device/xiaomi/dash"
+          cp -a "$DEVICE_TREE/." "$FOX_TREE/device/xiaomi/dash/"
+          rm -rf "$FOX_TREE/device/xiaomi/dash/.git"
+          ls -la "$FOX_TREE/device/xiaomi/dash/" | head -30
+
+      - name: Apply recovery source patches (optional)
+        run: |
+          set -e
+          if ls "$DEVICE_TREE"/patches/*.patch >/dev/null 2>&1; then
+            for p in "$DEVICE_TREE"/patches/*.patch; do
+              echo "Applying $p"
+              git -C "$FOX_TREE" apply --check "$p"
+              git -C "$FOX_TREE" apply "$p"
+            done
+          else
+            echo "patches/ 不存在 —— 构建未打补丁的 OrangeFox 源码（无 EV_FF 触觉补丁）"
+          fi
+
+      - name: Build vendor_boot
+        run: |
+          cd "$FOX_TREE"
+          source build/envsetup.sh
+          export ALLOW_MISSING_DEPENDENCIES=true
+          lunch twrp_dash-ap2a-eng
+          m installclean
+          m -j$(nproc --all) vendorbootimage
+        timeout-minutes: 300
+
+      - name: Extract recovery fragment (F1)
+        run: |
+          set -e
+          cd "$FOX_TREE"
+          VB=out/target/product/dash/vendor_boot.img
+          [ -f "$VB" ] || { echo "ERROR: $VB missing"; exit 1; }
+          rm -rf /tmp/vb-unpack && mkdir -p /tmp/vb-unpack
+          python3 system/tools/mkbootimg/unpack_bootimg.py --boot_img "$VB" --out /tmp/vb-unpack
+          F1=/tmp/vb-unpack/vendor_ramdisk01
+          [ -f "$F1" ] || { echo "ERROR: recovery fragment (vendor_ramdisk01) not found"; ls /tmp/vb-unpack; exit 1; }
+          gzip -t "$F1"
+          F1_SIZE=$(stat -c %s "$F1")
+          VB_SIZE=$(stat -c %s "$VB")
+          echo "F1_SIZE=$F1_SIZE" >> "$GITHUB_ENV"
+          echo "VB_SIZE=$VB_SIZE" >> "$GITHUB_ENV"
+          cp "$F1" "$FOX_TREE/recovery-fragment.cpio.gz"
+          echo "=== fragment ==="
+          sha256sum "$FOX_TREE/recovery-fragment.cpio.gz"
+          echo "F1: $F1_SIZE bytes ($((F1_SIZE / 1048576)) MiB)  built vendor_boot: $VB_SIZE bytes"
+
+      - name: Upload artifact (F1 + built vendor_boot)
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-fragment-dash
+          path: |
+            ${{ env.FOX_TREE }}/recovery-fragment.cpio.gz
+            ${{ env.FOX_TREE }}/out/target/product/dash/vendor_boot.img
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Job summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "## 构建结果"
+            echo "- F1 (recovery fragment): ${{ env.F1_SIZE }} bytes"
+            echo "- built vendor_boot.img: ${{ env.VB_SIZE }} bytes"
+            echo "- 磁盘:"
+            df -h /
+          } >> "$GITHUB_STEP_SUMMARY"

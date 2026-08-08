@@ -112,3 +112,24 @@ on property:twrp.modules.loaded=true && property:init.svc.vendor.gatekeeper_mite
 
 on property:twrp.modules.loaded=true && property:init.svc.vendor.secure_element_hal_service=running
     start se_omapi
+
+
+# Run Xiaomi's stock host-touch report loop without the Android Binder HAL.
+service dash-touch-bridge /system/bin/touch_report_debug
+    class core
+    user root
+    group root input
+    seclabel u:r:recovery:s0
+    disabled
+    # This is a long-running daemon. If it exits during early touch setup,
+    # let init retry it (default 5s period) instead of leaving the screen
+    # permanently inert.
+    setenv LD_LIBRARY_PATH /odm/lib64:/system/lib64
+
+# Module probing and ueventd publish the character node asynchronously, so
+# wait for the node before starting the host-touch loop.
+on boot
+    wait /dev/xiaomi-touch 10
+    chown root input /dev/xiaomi-touch
+    chmod 0660 /dev/xiaomi-touch
+    start dash-touch-bridge

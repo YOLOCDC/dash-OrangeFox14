@@ -77,7 +77,6 @@ esac
 test -d "$root" || die "missing recovery root"
 test -f "$bridge" || die "missing Soong bridge"
 test -x "$llvm_readobj" || die "missing llvm-readobj"
-test -f "$script_dir/patch-ap-touch-modules.py" || die "missing AP touch module generator"
 test -f "$script_dir/root/init.recovery.usb.rc" || die "missing Recovery USB configfs rc"
 test -f "$property_dir/system.build.prop" || die "missing official system build properties"
 test -f "$property_dir/vendor.build.prop" || die "missing official vendor build properties"
